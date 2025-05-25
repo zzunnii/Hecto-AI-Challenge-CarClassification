@@ -1,98 +1,133 @@
-import os
-import argparse
+import json
 import pandas as pd
 import numpy as np
-import torch
-from PIL import Image
-from tqdm import tqdm
-from transformers import ViTImageProcessor
-
-from brand_classification.config import config
-from brand_classification.model import CarBrandClassifier
-from brand_classification.dataset.augmentation import get_transform
-
-def load_model(model_path, config):
-    """저장된 모델 로드"""
-    model = CarBrandClassifier(config).to("cuda")
-    checkpoint = torch.load(model_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    return model
 
 
-def predict_image(image_path, model, processor, transform):
-    """단일 이미지에 대한 예측"""
-    # 이미지 로드 및 전처리
-    image = Image.open(image_path).convert('RGB')
-    image = transform(image)
-    image = image.unsqueeze(0).to("cuda")
+def debug_class_mapping():
+    """클래스 매핑 문제 디버깅"""
 
-    # 예측
-    with torch.no_grad():
-        outputs = model(image)
+    # 1. Label mappings 로드
+    label_mappings_path = r"C:\Users\tjdwn\GitHub\Hecto-AI-Challenge-CarClassification\car_classification\outputs\hierarchical_fold_1\label_mappings.json"
+    with open(label_mappings_path, 'r', encoding='utf-8') as f:
+        label_mappings = json.load(f)
 
-    logits = outputs["logits"]
-    probs = torch.softmax(logits, dim=1)[0]
+    id_to_class = {int(k): v for k, v in label_mappings['id_to_class'].items()}
+    trained_classes = [id_to_class[i] for i in range(len(id_to_class))]
 
-    return probs.cpu().numpy()
+    # 2. Sample submission 로드
+    sample_submission = pd.read_csv(r"C:\Users\tjdwn\OneDrive\Desktop\hectoData\open\sample_submission.csv")
+    submission_classes = [col for col in sample_submission.columns if col != 'ID']
+
+    print("=== 클래스 매핑 분석 ===")
+    print(f"학습 클래스 수: {len(trained_classes)}")
+    print(f"제출 클래스 수: {len(submission_classes)}")
+
+    # 3. 첫 10개 클래스 비교
+    print("\n첫 10개 클래스 비교:")
+    print("학습 클래스:")
+    for i in range(10):
+        print(f"  {i}: {trained_classes[i]}")
+
+    print("\n제출 클래스:")
+    for i in range(10):
+        print(f"  {i}: {submission_classes[i]}")
+
+    # 4. 클래스 일치 여부 확인
+    print("\n=== 클래스 일치 분석 ===")
+    trained_set = set(trained_classes)
+    submission_set = set(submission_classes)
+
+    # 학습에는 있지만 제출에는 없는 클래스
+    only_in_trained = trained_set - submission_set
+    if only_in_trained:
+        print(f"\n학습에만 있는 클래스 ({len(only_in_trained)}개):")
+        for cls in list(only_in_trained)[:5]:
+            print(f"  - {cls}")
+
+    # 제출에는 있지만 학습에는 없는 클래스
+    only_in_submission = submission_set - trained_set
+    if only_in_submission:
+        print(f"\n제출에만 있는 클래스 ({len(only_in_submission)}개):")
+        for cls in list(only_in_submission)[:5]:
+            print(f"  - {cls}")
+
+    # 5. 순서 확인
+    print("\n=== 순서 일치 확인 ===")
+    order_match = True
+    mismatch_count = 0
+    for i in range(min(len(trained_classes), len(submission_classes))):
+        if trained_classes[i] != submission_classes[i]:
+            if mismatch_count < 5:  # 처음 5개만 출력
+                print(f"인덱스 {i}: 학습[{trained_classes[i]}] != 제출[{submission_classes[i]}]")
+            mismatch_count += 1
+            order_match = False
+
+    if order_match:
+        print("✓ 클래스 순서가 완벽히 일치합니다!")
+    else:
+        print(f"✗ 총 {mismatch_count}개 위치에서 클래스 순서가 다릅니다!")
+
+    # 6. 제출 파일 분석
+    print("\n=== 제출 파일 분석 ===")
+    submission_path = r"C:\Users\tjdwn\GitHub\Hecto-AI-Challenge-CarClassification\submission_hierarchical_fold1_boosted.csv"
+    try:
+        submission_df = pd.read_csv(submission_path)
+
+        # 행 합 확인
+        row_sums = submission_df.iloc[:, 1:].sum(axis=1)
+        print(f"행 합 평균: {row_sums.mean():.4f} (1.0이어야 함)")
+        print(f"행 합 표준편차: {row_sums.std():.4f} (0에 가까워야 함)")
+
+        # 최대 확률 분포
+        max_probs = submission_df.iloc[:, 1:].max(axis=1)
+        print(f"\n최대 확률 통계:")
+        print(f"  평균: {max_probs.mean():.4f}")
+        print(f"  최소: {max_probs.min():.4f}")
+        print(f"  최대: {max_probs.max():.4f}")
+        print(f"  표준편차: {max_probs.std():.4f}")
+
+        # 예측 분포
+        print(f"\n예측 클래스 분포:")
+        pred_classes = submission_df.iloc[:, 1:].idxmax(axis=1)
+        class_counts = pred_classes.value_counts()
+        print(f"  유니크 클래스 수: {len(class_counts)}")
+        print(f"  상위 5개 클래스:")
+        for cls, count in class_counts.head().items():
+            print(f"    {cls}: {count}회")
+
+    except FileNotFoundError:
+        print(f"제출 파일을 찾을 수 없습니다: {submission_path}")
+
+    return trained_classes, submission_classes
 
 
-def predict_directory(dir_path, model, processor, transform, id_to_group):
-    """디렉토리 내 모든 이미지에 대한 예측"""
-    results = []
+def create_mapping_fix():
+    """올바른 클래스 매핑 생성"""
 
-    # 이미지 파일 목록 가져오기
-    image_files = [f for f in os.listdir(dir_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    # Sample submission의 클래스 순서 로드
+    sample_submission = pd.read_csv(r"C:\Users\tjdwn\OneDrive\Desktop\hectoData\open\sample_submission.csv")
+    submission_classes = [col for col in sample_submission.columns if col != 'ID']
 
-    for img_file in tqdm(image_files, desc="Predicting"):
-        img_path = os.path.join(dir_path, img_file)
-        probs = predict_image(img_path, model, processor, transform)
+    # 올바른 매핑 생성
+    correct_mapping = {i: cls for i, cls in enumerate(submission_classes)}
 
-        # 결과 저장
-        result = {
-            "file": img_file,
-            "predicted_class": id_to_group[np.argmax(probs)],
-            "confidence": np.max(probs)
-        }
+    # 저장
+    with open('correct_class_mapping.json', 'w', encoding='utf-8') as f:
+        json.dump(correct_mapping, f, ensure_ascii=False, indent=2)
 
-        # 각 클래스별 확률 추가
-        for i, prob in enumerate(probs):
-            result[id_to_group[i]] = prob
+    print(f"올바른 매핑을 correct_class_mapping.json에 저장했습니다.")
+    print(f"총 {len(correct_mapping)}개 클래스")
 
-        results.append(result)
-
-    return pd.DataFrame(results)
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Inference script for car brand classification')
-    parser.add_argument('--model_path', type=str, required=True, help='Path to saved model')
-    parser.add_argument('--test_dir', type=str, required=True, help='Directory containing test images')
-    parser.add_argument('--output', type=str, default='predictions.csv', help='Output CSV file')
-    parser.add_argument('--mapping_csv', type=str, default=config.MAPPING_CSV, help='CSV mapping file')
-
-    args = parser.parse_args()
-
-    # 클래스 매핑 로드
-    mapping_df = pd.read_csv(args.mapping_csv)
-    unique_groups = sorted(mapping_df['new_group'].unique())
-    id_to_group = {idx: group for idx, group in enumerate(unique_groups)}
-
-    # 모델 및 프로세서 로드
-    processor = ViTImageProcessor.from_pretrained(config.MODEL_NAME)
-    transform = get_transform(config, is_train=False)
-
-    # 모델 로드
-    config.NUM_LABELS = len(unique_groups)
-    model = load_model(args.model_path, config)
-
-    # 예측 실행
-    results_df = predict_directory(args.test_dir, model, processor, transform, id_to_group)
-
-    # 결과 저장
-    results_df.to_csv(args.output, index=False)
-    print(f"Predictions saved to {args.output}")
+    return correct_mapping
 
 
 if __name__ == "__main__":
-    main()
+    print("클래스 매핑 디버깅 시작...\n")
+
+    # 1. 현재 매핑 분석
+    trained_classes, submission_classes = debug_class_mapping()
+
+    # 2. 올바른 매핑 생성 제안
+    print("\n" + "=" * 50)
+    print("올바른 매핑을 생성하시겠습니까? (y/n)")
+    # create_mapping_fix()  # 필요시 주석 해제

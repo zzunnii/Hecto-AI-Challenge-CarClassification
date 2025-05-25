@@ -22,14 +22,14 @@ class Config:
     OUTPUT_DIR = "../outputs"
 
     # 모델 설정
-    MODEL_NAME = "google/vit-base-patch16-224"
+    MODEL_NAME = "microsoft/swin-base-patch4-window7-224-in22k"
     NUM_LABELS = 10  # original class 수 (자동 업데이트)
     NUM_GROUPS = 10  # new group 수 (자동 업데이트)
 
     # 계층적 분류 설정
     USE_HIERARCHICAL_CLASSIFICATION = True
-    GROUP_LOSS_WEIGHT = 0.4  # 1차 분류 (보조)
-    CLASS_LOSS_WEIGHT = 0.6  # 2차 분류 (주)
+    GROUP_LOSS_WEIGHT = 0.1  # 1차 분류 (보조)
+    CLASS_LOSS_WEIGHT = 0.9  # 2차 분류 (주)
 
     # 학습 파라미터
     SEED = 42

@@ -162,7 +162,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description='Hierarchical Car Classification Training')
-    parser.add_argument('--fold', type=int, default=1,
+    parser.add_argument('--fold', type=int, default=2,
                         help='Specific fold to train (0-4). If not specified, train current fold in config.')
     parser.add_argument('--all-folds', action='store_true',
                         help='Train all 5 folds sequentially')

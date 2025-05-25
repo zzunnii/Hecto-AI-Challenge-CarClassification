@@ -4,7 +4,7 @@ from transformers import AutoModel, AutoConfig
 
 
 class UniversalBackbone(nn.Module):
-    """ViT, Swin, 기타 Vision Transformer 백본을 지원하는 범용 백본"""
+    """ViT, Swin, ConvNeXt, ResNet 등 다양한 백본을 지원하는 범용 백본"""
 
     def __init__(self, model_name, output_hidden_states=False, trainable=True):
         super().__init__()
@@ -34,7 +34,17 @@ class UniversalBackbone(nn.Module):
         """모델 타입 자동 감지"""
         model_name_lower = self.model_name.lower()
 
-        if 'swin' in model_name_lower:
+        # CNN 계열
+        if 'convnext' in model_name_lower:
+            return 'convnext'
+        elif 'resnet' in model_name_lower:
+            return 'resnet'
+        elif 'regnet' in model_name_lower:
+            return 'regnet'
+        elif 'efficientnet' in model_name_lower:
+            return 'efficientnet'
+        # Transformer 계열
+        elif 'swin' in model_name_lower:
             return 'swin'
         elif 'vit' in model_name_lower:
             return 'vit'
@@ -42,13 +52,39 @@ class UniversalBackbone(nn.Module):
             return 'beit'
         elif 'deit' in model_name_lower:
             return 'deit'
+        elif 'cvt' in model_name_lower:
+            return 'cvt'
         else:
             # 기본값은 ViT 스타일로 처리
             return 'vit'
 
     def get_hidden_size(self):
         """모델의 hidden size 반환"""
-        if hasattr(self.config, 'hidden_size'):
+        # CNN 계열 모델들
+        if self.model_type in ['convnext', 'resnet', 'regnet', 'efficientnet']:
+            if hasattr(self.config, 'hidden_sizes') and self.config.hidden_sizes:
+                return self.config.hidden_sizes[-1]  # 마지막 레이어의 채널 수
+            elif hasattr(self.model, 'num_features'):
+                return self.model.num_features
+            elif hasattr(self.config, 'num_channels'):
+                return self.config.num_channels
+            else:
+                # ConvNeXt 특정 설정
+                if 'tiny' in self.model_name.lower():
+                    return 768
+                elif 'small' in self.model_name.lower():
+                    return 768
+                elif 'base' in self.model_name.lower():
+                    return 1024
+                elif 'large' in self.model_name.lower():
+                    return 1536
+                elif 'xlarge' in self.model_name.lower():
+                    return 2048
+                else:
+                    return 768  # 기본값
+
+        # Transformer 계열 모델들
+        elif hasattr(self.config, 'hidden_size'):
             return self.config.hidden_size
         elif hasattr(self.config, 'd_model'):
             return self.config.d_model
@@ -66,17 +102,34 @@ class UniversalBackbone(nn.Module):
     def forward(self, pixel_values):
         outputs = self.model(pixel_values=pixel_values)
 
-        # 모델 타입에 따라 다른 출력 처리
-        if self.model_type == 'swin':
+        # CNN 계열 모델 처리
+        if self.model_type in ['convnext', 'resnet', 'regnet', 'efficientnet']:
+            # CNN 모델들은 보통 pooler_output을 제공
+            if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
+                return outputs.pooler_output
+            elif hasattr(outputs, 'last_hidden_state'):
+                # Global Average Pooling 적용
+                last_hidden = outputs.last_hidden_state
+                # CNN의 경우: [batch, channels, height, width]
+                if len(last_hidden.shape) == 4:
+                    return torch.mean(last_hidden, dim=[2, 3])  # spatial dimensions을 평균
+                else:
+                    return torch.mean(last_hidden, dim=1)
+            else:
+                # 일부 모델은 직접 특징을 반환
+                return outputs
+
+        # Transformer 계열 모델 처리
+        elif self.model_type == 'swin':
             # Swin: pooler_output 또는 last_hidden_state의 평균
             if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
                 return outputs.pooler_output
             else:
                 # last_hidden_state의 평균 풀링 사용
                 last_hidden = outputs.last_hidden_state
-                return torch.mean(last_hidden, dim=1)  # [batch_size, seq_len, hidden] -> [batch_size, hidden]
+                return torch.mean(last_hidden, dim=1)
 
-        elif self.model_type in ['vit', 'beit', 'deit']:
+        elif self.model_type in ['vit', 'beit', 'deit', 'cvt']:
             # ViT 계열: [CLS] 토큰 사용
             if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
                 return outputs.pooler_output
@@ -86,10 +139,23 @@ class UniversalBackbone(nn.Module):
         else:
             # 기본: [CLS] 토큰 또는 첫 번째 토큰
             try:
-                return outputs.last_hidden_state[:, 0]
+                if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
+                    return outputs.pooler_output
+                elif hasattr(outputs, 'last_hidden_state'):
+                    if len(outputs.last_hidden_state.shape) == 3:
+                        # Transformer: [batch, seq_len, hidden]
+                        return outputs.last_hidden_state[:, 0]
+                    elif len(outputs.last_hidden_state.shape) == 4:
+                        # CNN: [batch, channels, height, width]
+                        return torch.mean(outputs.last_hidden_state, dim=[2, 3])
+                else:
+                    return outputs
             except:
                 # 최후의 수단: 평균 풀링
-                return torch.mean(outputs.last_hidden_state, dim=1)
+                if hasattr(outputs, 'last_hidden_state'):
+                    return torch.mean(outputs.last_hidden_state, dim=1)
+                else:
+                    return outputs
 
 
 # 기존 ViTBackbone과의 호환성을 위한 별칭
