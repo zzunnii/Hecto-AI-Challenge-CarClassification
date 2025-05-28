@@ -22,7 +22,7 @@ class Config:
     OUTPUT_DIR = "../outputs"
 
     # 모델 설정
-    MODEL_NAME = "resnet34"  # ResNet 계열 사용
+    MODEL_NAME = "resnet50"  # ResNet 계열 사용
     NUM_LABELS = 10  # original class 수 (자동 업데이트)
     NUM_GROUPS = 10  # new group 수 (자동 업데이트)
 
@@ -30,13 +30,13 @@ class Config:
     USE_HIERARCHICAL_CLASSIFICATION = True
 
     # 🔧 수정된 손실 가중치 (1차 분류 가중치 더 줄임)
-    GROUP_LOSS_WEIGHT = 0.1  # 0.1 → 0.05로 줄임
-    CLASS_LOSS_WEIGHT = 0.9  # 0.9 → 0.95로 증가
+    GROUP_LOSS_WEIGHT = 0.1  # 그룹 손실 가중치
+    CLASS_LOSS_WEIGHT = 0.9  # 클래스 손실 가중치
 
     # 🆕 점진적 학습 설정
     USE_PROGRESSIVE_TRAINING = True
-    GROUP_ONLY_EPOCHS = 7  # 처음 5 에폭은 그룹만 학습
-    GROUP_DOMINANCE_EPOCHS = 15  # 15 에폭까지는 그룹 가중치 높게
+    GROUP_ONLY_EPOCHS = 10  # 처음 7 에폭은 그룹만 학습
+    GROUP_DOMINANCE_EPOCHS = 20  # 15 에폭까지는 그룹 가중치 높게
 
     # 🆕 동적 가중치 스케줄링
     USE_DYNAMIC_LOSS_WEIGHTS = True
@@ -46,26 +46,31 @@ class Config:
     # 🆕 그룹 정보 활용 개선
     USE_GATED_FUSION = True  # 게이트된 특징 융합
     GROUP_ATTENTION_WEIGHT = 1.0  # 그룹 어텐션 가중치
+    GROUP_CONFIDENCE_THRESHOLD = 0.8  # 그룹 정보 활용 신뢰도 임계값
 
-    # 🔥 온도 스케일링 완전 제거
-    # INITIAL_TEMPERATURE = 2.0  # 삭제
-    # FINAL_TEMPERATURE = 1.0     # 삭제
+    # 🆕 적응형 클래스 가중치
+    USE_ADAPTIVE_CLASS_WEIGHTS = True  # 클래스별 적응형 가중치 사용
+    MAX_CLASS_WEIGHT = 2.0  # 최대 클래스 가중치
+    CLASS_WEIGHT_THRESHOLD = 0.7  # 가중치 적용 F1 점수 임계값
+    CLASS_WEIGHT_MEMORY_FACTOR = 0.7  # 이전 가중치 영향력
+    MAX_DEGRADATION_COUNT = 3  # 연속 성능 저하 허용 횟수
+
+    # 🆕 어텐션 메커니즘 설정
+    USE_ENHANCED_ATTENTION = True  # 향상된 어텐션 사용
+    ATTENTION_HEADS = 8  # 어텐션 헤드 수
+    ATTENTION_DROPOUT = 0.1  # 어텐션 드롭아웃
 
     # 🆕 학습률 차등 적용
     USE_DIFFERENT_LR = True
     GROUP_LEARNING_RATE = 1e-5  # 그룹 분류기 학습률 (더 낮게)
     CLASS_LEARNING_RATE = 2e-4  # 클래스 분류기 학습률 (더 높게)
 
-    # 🆕 조기 정지 개선 (loss 기준)
+    # 🆕 조기 정지 개선
     USE_ADAPTIVE_EARLY_STOPPING = True
-
-    # 그룹만 학습 단계에서는 group accuracy
-    GROUP_STAGE_METRIC = "group_acc"
-    CLASS_STAGE_METRIC = "class_acc"
-
-    EARLY_STOPPING_METRIC = "class_acc"
-
-    EARLY_STOPPING_PATIENCE = 15  # 더 긴 인내심
+    GROUP_STAGE_METRIC = "group_acc"  # 그룹 단계 모니터링 지표
+    CLASS_STAGE_METRIC = "class_acc"  # 클래스 단계 모니터링 지표
+    EARLY_STOPPING_METRIC = "class_acc"  # 최종 조기 정지 지표
+    EARLY_STOPPING_PATIENCE = 15  # 조기 정지 인내심
 
     # 학습 파라미터
     SEED = 42
@@ -77,7 +82,7 @@ class Config:
     WARMUP_RATIO = 0.1
 
     # 이미지 전처리 - 모델별 동적 설정
-    _IMG_SIZE = None  # 내부 변수
+    _IMG_SIZE = (384, 384)  # 기본값 384x384로 변경
     USE_ASPECT_PRESERVING = True
     PADDING_COLOR = (0, 0, 0)
 
@@ -90,7 +95,6 @@ class Config:
     USE_BACKGROUND_BRIGHTNESS = True
     BRIGHTNESS_RANGE = (0.7, 1.3)
     RANDOM_CROP_RATIO = 0.8
-
 
     USE_SHIFT_SCALE_ROTATE = True
     SHIFT_LIMIT = 0.05
@@ -161,14 +165,14 @@ class Config:
 
         # ResNet 계열은 더 큰 이미지 크기 사용
         if 'resnet' in model_name_lower:
-            return (512, 512)  # height, width
+            return (384, 384)  # 수정: 512x512 -> 384x384
         elif 'efficientnet' in model_name_lower:
             if 'b7' in model_name_lower:
-                return (600, 600)
+                return (456, 456)  # 수정: 600x600 -> 456x456
             elif 'b6' in model_name_lower:
-                return (528, 528)
+                return (420, 420)  # 수정: 528x528 -> 420x420
             elif 'b5' in model_name_lower:
-                return (456, 456)
+                return (384, 384)  # 수정: 456x456 -> 384x384
             elif 'b4' in model_name_lower:
                 return (380, 380)
             else:
@@ -272,6 +276,8 @@ class Config:
         print(f"MODEL_NAME: {self.MODEL_NAME}")
         print(f"MODEL_TYPE: {self.get_model_type()}")
         print(f"IMG_SIZE: {self.IMG_SIZE}")
+        print(f"USE_ENHANCED_ATTENTION: {self.USE_ENHANCED_ATTENTION}")
+        print(f"USE_ADAPTIVE_CLASS_WEIGHTS: {self.USE_ADAPTIVE_CLASS_WEIGHTS}")
 
 
 config = Config()

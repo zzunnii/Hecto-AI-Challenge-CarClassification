@@ -1,2 +1,2 @@
-from .trainer import ImprovedHierarchicalTrainer
-from .loss import FocalLoss, MixupLoss
+from .trainer import  ImprovedHierarchicalTrainer, HierarchicalTrainer
+from .loss import FocalLoss, MixupLoss, AdaptiveClassWeightScheduler

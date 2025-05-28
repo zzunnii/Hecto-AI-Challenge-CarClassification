@@ -12,7 +12,7 @@ from sklearn.metrics import accuracy_score, f1_score, classification_report
 import glob
 
 from car_classification.config import config
-from car_classification.train.loss import FocalLoss, MixupLoss
+from car_classification.train.loss import FocalLoss, MixupLoss, AdaptiveClassWeightScheduler
 from car_classification.dataset.augmentation import Mixup
 from car_classification.utils.metrics import log_loss_calc_for_validation, multiclass_log_loss, \
     create_answer_df_from_arrays, create_submission_df_from_arrays
@@ -79,6 +79,21 @@ class ImprovedHierarchicalTrainer:
         self.class_weights = class_weights
         self.group_weights = group_weights
 
+        # 적응형 클래스 가중치 스케줄러 초기화
+        if getattr(config, 'USE_ADAPTIVE_CLASS_WEIGHTS', False):
+            self.adaptive_scheduler = AdaptiveClassWeightScheduler(
+                num_classes=config.NUM_LABELS,
+                initial_f1_scores=None,  # 첫 검증 후 설정
+                base_weight=1.0,
+                max_weight=config.MAX_CLASS_WEIGHT,
+                threshold=config.CLASS_WEIGHT_THRESHOLD,
+                memory_factor=config.CLASS_WEIGHT_MEMORY_FACTOR,
+                max_degradation=config.MAX_DEGRADATION_COUNT
+            )
+            print("Initialized AdaptiveClassWeightScheduler")
+        else:
+            self.adaptive_scheduler = None
+
         # 손실 함수 설정
         self._setup_loss_functions()
 
@@ -128,7 +143,7 @@ class ImprovedHierarchicalTrainer:
         self.class_names = None
 
     def _setup_loss_functions(self):
-        """손실 함수 설정"""
+        """손실 함수 설정 - 적응형 가중치 적용"""
         # 2차 분류 손실 함수 (주 태스크)
         if self.config.USE_FOCAL_LOSS:
             if self.config.FOCAL_LOSS_ALPHA is None and self.class_weights is not None:
@@ -151,6 +166,10 @@ class ImprovedHierarchicalTrainer:
         # 모델에 손실 함수 전달
         self.model.class_loss_fn = self.class_criterion
         self.model.group_loss_fn = self.group_criterion
+
+        # 모델에 초기 클래스 가중치 설정
+        if self.class_weights is not None:
+            self.model.set_class_weights(self.class_weights)
 
     def _setup_optimizers(self):
         """옵티마이저 설정 (차등 학습률 지원)"""
@@ -338,7 +357,7 @@ class ImprovedHierarchicalTrainer:
             return train_loss, train_class_loss, train_group_loss, None, None, None
 
     def validate(self, epoch):
-        """검증 데이터로 평가 (새로운 로그 로스 사용)"""
+        """검증 데이터로 평가 (클래스별 F1 점수 계산 추가)"""
         self.model.eval()
         val_loss = 0
         val_class_loss = 0
@@ -406,6 +425,25 @@ class ImprovedHierarchicalTrainer:
             val_acc = accuracy_score(all_labels, all_preds)
             val_f1 = f1_score(all_labels, all_preds, average='weighted')
 
+            # 클래스별 F1 점수 계산
+            class_f1_scores = f1_score(all_labels, all_preds, average=None)
+
+            # 적응형 클래스 가중치 업데이트
+            if self.adaptive_scheduler is not None:
+                updated_weights = self.adaptive_scheduler.update_f1_scores(class_f1_scores)
+
+                # 모델에 업데이트된 가중치 설정
+                self.model.set_class_weights(torch.tensor(updated_weights).to("cuda"))
+
+                # 문제 클래스 정보 로깅
+                problem_classes = self.adaptive_scheduler.get_problem_classes_info()
+                print("\nProblem Classes Update:")
+                for info in problem_classes[:5]:  # 상위 5개만
+                    print(f"  Class {info['class_idx']}: F1={info['f1_score']:.4f}, Weight={info['weight']:.4f}")
+
+                if len(problem_classes) > 5:
+                    print(f"  ... and {len(problem_classes) - 5} more problem classes")
+
             # 🆕 새로운 방식의 로그 로스 계산
             try:
                 # 클래스 이름 생성 (인덱스 기반)
@@ -464,7 +502,8 @@ class ImprovedHierarchicalTrainer:
             'val_metrics': val_metrics,
             'config': self.config.to_dict(),
             'metric_name': metric_name,
-            'class_names': self.class_names  # 🆕 클래스 이름 저장
+            'class_names': self.class_names,  # 🆕 클래스 이름 저장
+            'class_weights': self.model.class_weights if hasattr(self.model, 'class_weights') else None  # 적응형 가중치 저장
         }
 
         # 모델 저장
@@ -493,6 +532,8 @@ class ImprovedHierarchicalTrainer:
         print(f"Starting hierarchical training for {self.config.NUM_EPOCHS} epochs...")
         print(f"Progressive training: {getattr(self.config, 'USE_PROGRESSIVE_TRAINING', False)}")
         print(f"Dynamic loss weights: {getattr(self.config, 'USE_DYNAMIC_LOSS_WEIGHTS', False)}")
+        print(f"Adaptive class weights: {getattr(self.config, 'USE_ADAPTIVE_CLASS_WEIGHTS', False)}")
+        print(f"Enhanced attention: {getattr(self.config, 'USE_ENHANCED_ATTENTION', False)}")
         print(f"Early stopping metric: {self.config.EARLY_STOPPING_METRIC}")
         print(f"Higher is better: {self.higher_is_better}")
         print("🔥 Temperature scaling: DISABLED")
@@ -520,6 +561,13 @@ class ImprovedHierarchicalTrainer:
             # 훈련 결과 출력
             print(f"\nEpoch {epoch + 1}/{self.config.NUM_EPOCHS} (Stage: {training_stage}):")
             print(f"  Weights - Group: {current_weights[0]:.3f}, Class: {current_weights[1]:.3f}")
+
+            # 적응형 가중치 상태 로깅 (있는 경우)
+            if self.adaptive_scheduler is not None:
+                num_problem_classes = len(self.adaptive_scheduler.problematic_classes)
+                print(
+                    f"  Adaptive weights: {num_problem_classes} problem classes, max weight: {self.adaptive_scheduler.current_weights.max().item():.4f}")
+
             print(f"  Train:")
             print(f"    Total Loss: {train_loss:.4f} (Class: {train_class_loss:.4f}, Group: {train_group_loss:.4f})")
             if train_acc is not None:

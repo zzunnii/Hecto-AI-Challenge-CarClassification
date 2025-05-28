@@ -61,6 +61,8 @@ def main():
     print(f"  CSV mapping: {config.MAPPING_CSV_PATH}")
     print(f"  Model: {config.MODEL_NAME} ({config.get_model_type()})")
     print(f"  Image size: {config.IMG_SIZE}")
+    print(f"  Enhanced attention: {getattr(config, 'USE_ENHANCED_ATTENTION', False)}")
+    print(f"  Adaptive class weights: {getattr(config, 'USE_ADAPTIVE_CLASS_WEIGHTS', False)}")
 
     # CSV 매핑 파일 확인
     if not os.path.exists(config.MAPPING_CSV_PATH):
@@ -102,6 +104,10 @@ def main():
     # 모델 초기화 (개선된 버전)
     print(f"\nInitializing improved hierarchical model...")
     model = HierarchicalCarClassifierImproved(config).to("cuda")
+
+    # 클래스-그룹 매핑 초기화 (데이터셋 정보 추가)
+    model.initialize_class_group_mapping(mapping_info, train_dataset)
+    print("Class-group mapping initialized")
 
     # 모델 정보 출력
     model_info = model.get_model_info()
@@ -211,8 +217,8 @@ if __name__ == "__main__":
                         help='Train all 5 folds sequentially')
     parser.add_argument('--model', type=str, default='resnet50',
                         help='Model name to use (overrides config)')
-    parser.add_argument('--img-size', nargs=2, type=int, default=(512,512),
-                        help='Image size as height width (e.g., --img-size 512 384)')
+    parser.add_argument('--img-size', nargs=2, type=int, default=(384, 384),
+                        help='Image size as height width (e.g., --img-size 384 384)')
 
     args = parser.parse_args()
 
