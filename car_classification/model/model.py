@@ -5,131 +5,124 @@ import torch.nn.functional as F
 from car_classification.model.backbone import ViTBackbone
 
 
-class ResidualBlock(nn.Module):
-    """Residual connection이 있는 블록"""
+class GatedFusionModule(nn.Module):
+    """그룹 정보를 게이트 방식으로 융합하는 모듈"""
 
-    def __init__(self, in_features, out_features, dropout=0.1):
-        super().__init__()
-        self.fc = nn.Linear(in_features, out_features)
-        self.ln = nn.LayerNorm(out_features)
-        self.dropout = nn.Dropout(dropout)
-
-        # Skip connection을 위한 projection (차원이 다른 경우)
-        self.skip_connection = nn.Identity() if in_features == out_features else nn.Linear(in_features, out_features)
-
-    def forward(self, x):
-        identity = self.skip_connection(x)
-
-        out = self.fc(x)
-        out = self.ln(out)
-        out = F.gelu(out)
-        out = self.dropout(out)
-
-        return out + identity
-
-
-class AttentionPooling(nn.Module):
-    """Attention 기반 특징 집계"""
-
-    def __init__(self, hidden_size):
-        super().__init__()
-        self.attention = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 4),
-            nn.Tanh(),
-            nn.Linear(hidden_size // 4, 1)
-        )
-
-    def forward(self, x):
-        # x: [batch, hidden_size]
-        scores = self.attention(x)
-        weights = F.softmax(scores, dim=-1)
-        weighted = x * weights
-        return weighted
-
-
-class ImprovedFeatureExtractor(nn.Module):
-    """개선된 특징 추출기"""
-
-    def __init__(self, hidden_size, num_layers=3):
+    def __init__(self, feature_size, num_groups):
         super().__init__()
 
-        # 초기 프로젝션
-        self.input_proj = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size * 2),
-            nn.LayerNorm(hidden_size * 2),
-            nn.GELU(),
-            nn.Dropout(0.1)
-        )
+        # 그룹 임베딩
+        self.group_embedding = nn.Embedding(num_groups, feature_size // 4)
 
-        # Residual 블록들
-        self.blocks = nn.ModuleList([
-            ResidualBlock(hidden_size * 2, hidden_size * 2, dropout=0.1 + i * 0.05)
-            for i in range(num_layers)
-        ])
-
-        # Attention pooling
-        self.attention_pool = AttentionPooling(hidden_size * 2)
-
-        # 최종 프로젝션
-        self.output_proj = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size * 2),
-            nn.LayerNorm(hidden_size * 2)
-        )
-
-    def forward(self, x):
-        # 초기 변환
-        x = self.input_proj(x)
-
-        # Residual 블록 통과
-        for block in self.blocks:
-            x = block(x)
-
-        # Attention pooling
-        x = self.attention_pool(x)
-
-        # 최종 프로젝션
-        x = self.output_proj(x)
-
-        return x
-
-
-class GroupAwareClassifier(nn.Module):
-    """그룹 정보를 활용하는 개선된 분류기"""
-
-    def __init__(self, feature_size, num_groups, num_classes, hidden_size):
-        super().__init__()
-
-        # 그룹별 특징 변환
-        self.group_transform = nn.Sequential(
-            nn.Linear(num_groups, hidden_size // 4),
+        # 게이트 네트워크
+        self.gate = nn.Sequential(
+            nn.Linear(feature_size + feature_size // 4, feature_size // 2),
             nn.ReLU(),
-            nn.Linear(hidden_size // 4, hidden_size // 2)
+            nn.Linear(feature_size // 2, feature_size),
+            nn.Sigmoid()
         )
 
-        # 특징 결합
-        combined_size = feature_size + hidden_size // 2
-
-        # 분류 헤드 (더 깊게)
-        self.classifier = nn.Sequential(
-            ResidualBlock(combined_size, hidden_size * 2, dropout=0.2),
-            ResidualBlock(hidden_size * 2, hidden_size * 2, dropout=0.15),
-            ResidualBlock(hidden_size * 2, hidden_size, dropout=0.1),
-            nn.Linear(hidden_size, num_classes)
+        # 융합 네트워크
+        self.fusion = nn.Sequential(
+            nn.Linear(feature_size + feature_size // 4, feature_size),
+            nn.LayerNorm(feature_size),
+            nn.ReLU()
         )
 
-    def forward(self, features, group_logits):
-        # 그룹 정보 변환
-        group_features = self.group_transform(group_logits)
+    def forward(self, features, group_probs):
+        batch_size = features.size(0)
+
+        # 그룹 확률의 가중 평균으로 그룹 임베딩 계산
+        group_weights = F.softmax(group_probs, dim=1)  # [batch_size, num_groups]
+
+        # 모든 그룹 임베딩 가져오기
+        all_group_embs = self.group_embedding.weight  # [num_groups, emb_dim]
+
+        # 가중 평균으로 그룹 특징 계산
+        group_features = torch.matmul(group_weights, all_group_embs)  # [batch_size, emb_dim]
 
         # 특징 결합
-        combined = torch.cat([features, group_features], dim=-1)
+        combined = torch.cat([features, group_features], dim=1)
 
-        # 분류
-        return self.classifier(combined)
+        # 게이트 계산
+        gate_weights = self.gate(combined)
+
+        # 게이트된 특징 융합
+        fused_features = self.fusion(combined)
+        gated_features = gate_weights * fused_features + (1 - gate_weights) * features
+
+        return gated_features
+
+
+class ProgressiveClassifier(nn.Module):
+    """점진적 학습을 지원하는 분류기"""
+
+    def __init__(self, feature_size, num_groups, num_classes):
+        super().__init__()
+
+        # 1차 분류기 (그룹) - 더 간단하게
+        self.group_classifier = nn.Sequential(
+            nn.Dropout(0.1),
+            nn.Linear(feature_size, feature_size // 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(feature_size // 2, num_groups)
+        )
+
+        # 그룹 정보 융합 모듈
+        self.fusion_module = GatedFusionModule(feature_size, num_groups)
+
+        # 2차 분류기 (최종 클래스) - 더 강력하게
+        self.class_classifier = nn.Sequential(
+            nn.Dropout(0.2),  # up from 0.15
+            nn.Linear(feature_size, feature_size * 2),
+            nn.LayerNorm(feature_size * 2),
+            nn.ReLU(),
+            nn.Dropout(0.25),  # up from 0.15
+            nn.Linear(feature_size * 2, feature_size),
+            nn.LayerNorm(feature_size),
+            nn.ReLU(),
+            nn.Dropout(0.15),  # up from 0.1
+            nn.Linear(feature_size, num_classes)
+        )
+
+        # 점진적 학습을 위한 플래그
+        self.training_stage = "both"  # "group_only", "both"
+
+    def set_training_stage(self, stage):
+        """학습 단계 설정"""
+        self.training_stage = stage
+
+        if stage == "group_only":
+            # 그룹만 학습 시 클래스 분류기 고정
+            for param in self.class_classifier.parameters():
+                param.requires_grad = False
+        else:
+            # 모든 파라미터 학습 가능
+            for param in self.parameters():
+                param.requires_grad = True
+
+    def forward(self, features):
+        # 1차 분류 (그룹)
+        group_logits = self.group_classifier(features)
+
+        if self.training_stage == "group_only":
+            # 그룹만 학습하는 단계
+            dummy_class_logits = torch.zeros(features.size(0), self.class_classifier[-1].out_features,
+                                             device=features.device)
+            return group_logits, dummy_class_logits
+
+        # 그룹 정보를 활용한 특징 융합
+        fused_features = self.fusion_module(features, group_logits)
+
+        # 2차 분류 (최종 클래스)
+        class_logits = self.class_classifier(fused_features)
+
+        return group_logits, class_logits
 
 
 class HierarchicalCarClassifierImproved(nn.Module):
-    """개선된 계층적 차량 분류기"""
+    """개선된 계층적 차량 분류기 - 점진적 학습 및 개선된 융합 (온도 스케일링 제거)"""
 
     def __init__(self, config):
         super().__init__()
@@ -140,60 +133,88 @@ class HierarchicalCarClassifierImproved(nn.Module):
         self.hidden_size = self.backbone.get_hidden_size()
         print(f"Model hidden size: {self.hidden_size}")
 
-        # Temperature scaling 파라미터
-        self.temperature = nn.Parameter(torch.ones(1) * 1.0)
-
-        # 개선된 특징 추출기
-        self.feature_extractor = ImprovedFeatureExtractor(
-            self.hidden_size,
-            num_layers=3
+        # 특징 추출기
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size * 2),
+            nn.LayerNorm(self.hidden_size * 2),
+            nn.GELU(),
+            nn.Dropout(0.1),  # 추가
+            nn.Linear(self.hidden_size * 2, self.hidden_size),
+            nn.LayerNorm(self.hidden_size),
+            nn.Dropout(0.1)  # 추가
         )
 
-        # 1차 분류기 (그룹) - 더 강력하게
-        self.group_classifier = nn.Sequential(
-            ResidualBlock(self.hidden_size * 2, self.hidden_size, dropout=0.15),
-            ResidualBlock(self.hidden_size, self.hidden_size // 2, dropout=0.1),
-            nn.Linear(self.hidden_size // 2, config.NUM_GROUPS)
-        )
-
-        # 2차 분류기 (최종 클래스) - 그룹 정보 활용 개선
-        self.class_classifier = GroupAwareClassifier(
-            feature_size=self.hidden_size * 2,
+        # 점진적 분류기
+        self.classifier = ProgressiveClassifier(
+            feature_size=self.hidden_size,
             num_groups=config.NUM_GROUPS,
-            num_classes=config.NUM_LABELS,
-            hidden_size=self.hidden_size
+            num_classes=config.NUM_LABELS
         )
+
+        # 🔥 온도 스케일링 관련 코드 완전 제거
+        # self.register_buffer('temperature', torch.tensor(...))  # 삭제
+        # self.final_temperature = ...  # 삭제
+
+        # 현재 에폭 추적
+        self.current_epoch = 0
 
         # Dropout layers
-        self.backbone_dropout = nn.Dropout(0.1)
-        self.feature_dropout = nn.Dropout(0.15)
+        self.backbone_dropout = nn.Dropout(0.2)
 
-        # Layer normalization for stability
-        self.backbone_norm = nn.LayerNorm(self.hidden_size)
+    def set_epoch(self, epoch):
+        """현재 에폭 설정 및 학습 단계 조정"""
+        self.current_epoch = epoch
+
+        # 점진적 학습 설정
+        if hasattr(self.config, 'USE_PROGRESSIVE_TRAINING') and self.config.USE_PROGRESSIVE_TRAINING:
+            group_only_epochs = getattr(self.config, 'GROUP_ONLY_EPOCHS', 5)
+
+            if epoch < group_only_epochs:
+                self.classifier.set_training_stage("group_only")
+                print(f"Epoch {epoch}: Training GROUP ONLY")
+            else:
+                self.classifier.set_training_stage("both")
+                if epoch == group_only_epochs:
+                    print(f"Epoch {epoch}: Starting BOTH group and class training")
+
+        # 🔥 온도 스케일링 동적 조정 제거
+        # if hasattr(self.config, 'INITIAL_TEMPERATURE'): ...  # 삭제
+
+    def get_dynamic_loss_weights(self, epoch):
+        """동적 손실 가중치 계산"""
+        if not getattr(self.config, 'USE_DYNAMIC_LOSS_WEIGHTS', False):
+            return self.config.GROUP_LOSS_WEIGHT, self.config.CLASS_LOSS_WEIGHT
+
+        # 점진적 학습 단계별 가중치 조정
+        group_only_epochs = getattr(self.config, 'GROUP_ONLY_EPOCHS', 5)
+        dominance_epochs = getattr(self.config, 'GROUP_DOMINANCE_EPOCHS', 15)
+
+        if epoch < group_only_epochs:
+            # 그룹만 학습
+            return 1.0, 0.0
+        elif epoch < dominance_epochs:
+            # 그룹 우세 학습
+            progress = (epoch - group_only_epochs) / (dominance_epochs - group_only_epochs)
+            group_weight = self.config.MAX_GROUP_WEIGHT * (1 - progress) + self.config.MIN_GROUP_WEIGHT * progress
+            class_weight = 1.0 - group_weight
+            return group_weight, class_weight
+        else:
+            # 클래스 중심 학습
+            return self.config.MIN_GROUP_WEIGHT, 1.0 - self.config.MIN_GROUP_WEIGHT
 
     def forward(self, pixel_values, labels=None, group_labels=None):
         # 백본 특징 추출
         backbone_features = self.backbone(pixel_values)
-        backbone_features = self.backbone_norm(backbone_features)  # 정규화
         backbone_features = self.backbone_dropout(backbone_features)
 
-        # 개선된 특징 추출
+        # 특징 추출
         features = self.feature_extractor(backbone_features)
-        features = self.feature_dropout(features)
 
-        # 1차 분류 (그룹)
-        group_logits = self.group_classifier(features)
+        # 분류
+        group_logits, class_logits = self.classifier(features)
 
-        # Temperature scaling (추론 시 사용)
-        if not self.training:
-            group_logits = group_logits / self.temperature
-
-        # 2차 분류 (최종 클래스) - 그룹 정보 활용
-        class_logits = self.class_classifier(features, group_logits)
-
-        # Temperature scaling (추론 시 사용)
-        if not self.training:
-            class_logits = class_logits / self.temperature
+        # 🔥 온도 스케일링 완전 제거
+        # 원본 logits를 그대로 사용 (학습/추론 구분 없음)
 
         # 손실 계산
         loss = None
@@ -201,25 +222,30 @@ class HierarchicalCarClassifierImproved(nn.Module):
         class_loss = None
 
         if labels is not None:
+            # 동적 가중치 계산
+            group_weight, class_weight = self.get_dynamic_loss_weights(self.current_epoch)
+
             # 2차 분류 손실 (주 태스크)
-            if hasattr(self, 'class_loss_fn'):
-                class_loss = self.class_loss_fn(class_logits, labels)
-            else:
-                # Label smoothing 증가
-                class_loss = F.cross_entropy(class_logits, labels, label_smoothing=0.15)
+            if self.classifier.training_stage != "group_only":
+                if hasattr(self, 'class_loss_fn'):
+                    class_loss = self.class_loss_fn(class_logits, labels)
+                else:
+                    class_loss = F.cross_entropy(class_logits, labels, label_smoothing=0.1)
 
             # 1차 분류 손실 (보조 태스크)
             if group_labels is not None:
                 if hasattr(self, 'group_loss_fn'):
                     group_loss = self.group_loss_fn(group_logits, group_labels)
                 else:
-                    group_loss = F.cross_entropy(group_logits, group_labels, label_smoothing=0.1)
+                    group_loss = F.cross_entropy(group_logits, group_labels, label_smoothing=0.05)
 
-                # 총 손실 (가중 합)
-                loss = (self.config.GROUP_LOSS_WEIGHT * group_loss +
-                        self.config.CLASS_LOSS_WEIGHT * class_loss)
+                # 총 손실 계산
+                if class_loss is not None:
+                    loss = group_weight * group_loss + class_weight * class_loss
+                else:
+                    loss = group_loss
             else:
-                loss = class_loss
+                loss = class_loss if class_loss is not None else torch.tensor(0.0)
 
         return {
             "loss": loss,
@@ -228,7 +254,9 @@ class HierarchicalCarClassifierImproved(nn.Module):
             "logits": class_logits,  # 최종 클래스 예측
             "group_logits": group_logits,  # 그룹 예측
             "features": features,
-            "temperature": self.temperature
+            # 🔥 온도 관련 반환값 제거
+            # "temperature": self.temperature,  # 삭제
+            "current_weights": self.get_dynamic_loss_weights(self.current_epoch) if labels is not None else None
         }
 
     def get_model_info(self):
@@ -241,23 +269,12 @@ class HierarchicalCarClassifierImproved(nn.Module):
             "num_labels": self.config.NUM_LABELS,
             "total_params": sum(p.numel() for p in self.parameters()),
             "trainable_params": sum(p.numel() for p in self.parameters() if p.requires_grad),
-            "temperature": self.temperature.item()
+            # 🔥 온도 관련 정보 제거
+            # "temperature": self.temperature.item(),  # 삭제
+            "training_stage": self.classifier.training_stage,
+            "current_epoch": self.current_epoch
         }
         return info
-
-    def freeze_backbone(self):
-        """백본 고정 (선택적)"""
-        for param in self.backbone.parameters():
-            param.requires_grad = False
-
-    def unfreeze_backbone(self):
-        """백본 학습 가능하게 (선택적)"""
-        for param in self.backbone.parameters():
-            param.requires_grad = True
-
-    def set_temperature(self, temperature):
-        """Temperature 수동 설정 (추론용)"""
-        self.temperature.data.fill_(temperature)
 
 
 # 기존 코드와의 호환성을 위한 별칭

@@ -1,2 +1,2 @@
-from .model import HierarchicalCarClassifier
+from .model import HierarchicalCarClassifierImproved
 from .backbone import ViTBackbone

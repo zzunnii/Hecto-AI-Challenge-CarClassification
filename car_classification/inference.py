@@ -69,7 +69,7 @@ def debug_class_mapping():
 
     # 6. 제출 파일 분석
     print("\n=== 제출 파일 분석 ===")
-    submission_path = r"C:\Users\tjdwn\GitHub\Hecto-AI-Challenge-CarClassification\submission_hierarchical_fold1_boosted.csv"
+    submission_path = r"C:\Users\tjdwn\GitHub\Hecto-AI-Challenge-CarClassification\car_classification\submission_hierarchical_fold2.csv"
     try:
         submission_df = pd.read_csv(submission_path)
 

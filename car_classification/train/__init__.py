@@ -1,2 +1,2 @@
-from .trainer import HierarchicalTrainer
+from .trainer import ImprovedHierarchicalTrainer
 from .loss import FocalLoss, MixupLoss

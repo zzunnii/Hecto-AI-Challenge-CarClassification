@@ -1,8 +1,3 @@
-"""
-혼동 패턴 분석 시스템
-C:\Users\tjdwn\GitHub\Hecto-AI-Challenge-CarClassification\brand_classification\analysis\confusion_analysis.py
-"""
-
 import os
 import json
 import numpy as np

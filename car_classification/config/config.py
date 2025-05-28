@@ -1,5 +1,5 @@
 import os
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 
 class Config:
@@ -22,43 +22,86 @@ class Config:
     OUTPUT_DIR = "../outputs"
 
     # 모델 설정
-    MODEL_NAME = "microsoft/swin-base-patch4-window7-224-in22k"
+    MODEL_NAME = "resnet34"  # ResNet 계열 사용
     NUM_LABELS = 10  # original class 수 (자동 업데이트)
     NUM_GROUPS = 10  # new group 수 (자동 업데이트)
 
-    # 계층적 분류 설정
+    # 🆕 개선된 계층적 분류 설정
     USE_HIERARCHICAL_CLASSIFICATION = True
-    GROUP_LOSS_WEIGHT = 0.1  # 1차 분류 (보조)
-    CLASS_LOSS_WEIGHT = 0.9  # 2차 분류 (주)
+
+    # 🔧 수정된 손실 가중치 (1차 분류 가중치 더 줄임)
+    GROUP_LOSS_WEIGHT = 0.1  # 0.1 → 0.05로 줄임
+    CLASS_LOSS_WEIGHT = 0.9  # 0.9 → 0.95로 증가
+
+    # 🆕 점진적 학습 설정
+    USE_PROGRESSIVE_TRAINING = True
+    GROUP_ONLY_EPOCHS = 7  # 처음 5 에폭은 그룹만 학습
+    GROUP_DOMINANCE_EPOCHS = 15  # 15 에폭까지는 그룹 가중치 높게
+
+    # 🆕 동적 가중치 스케줄링
+    USE_DYNAMIC_LOSS_WEIGHTS = True
+    MIN_GROUP_WEIGHT = 0.01  # 최소 그룹 가중치
+    MAX_GROUP_WEIGHT = 0.3  # 최대 그룹 가중치
+
+    # 🆕 그룹 정보 활용 개선
+    USE_GATED_FUSION = True  # 게이트된 특징 융합
+    GROUP_ATTENTION_WEIGHT = 1.0  # 그룹 어텐션 가중치
+
+    # 🔥 온도 스케일링 완전 제거
+    # INITIAL_TEMPERATURE = 2.0  # 삭제
+    # FINAL_TEMPERATURE = 1.0     # 삭제
+
+    # 🆕 학습률 차등 적용
+    USE_DIFFERENT_LR = True
+    GROUP_LEARNING_RATE = 1e-5  # 그룹 분류기 학습률 (더 낮게)
+    CLASS_LEARNING_RATE = 2e-4  # 클래스 분류기 학습률 (더 높게)
+
+    # 🆕 조기 정지 개선 (loss 기준)
+    USE_ADAPTIVE_EARLY_STOPPING = True
+
+    # 그룹만 학습 단계에서는 group accuracy
+    GROUP_STAGE_METRIC = "group_acc"
+    CLASS_STAGE_METRIC = "class_acc"
+
+    EARLY_STOPPING_METRIC = "class_acc"
+
+    EARLY_STOPPING_PATIENCE = 15  # 더 긴 인내심
 
     # 학습 파라미터
     SEED = 42
-    BATCH_SIZE = 32
+    BATCH_SIZE = 32  # ResNet은 더 큰 이미지로 인해 배치 크기 줄임
     GRADIENT_ACCUMULATION_STEPS = 4
-    LEARNING_RATE = 2e-5
+    LEARNING_RATE = 1e-4  # ResNet 파인튜닝을 위해 더 작은 learning rate
     WEIGHT_DECAY = 0.01
     NUM_EPOCHS = 300
     WARMUP_RATIO = 0.1
 
-    # 이미지 전처리
-    IMG_SIZE = 224
+    # 이미지 전처리 - 모델별 동적 설정
+    _IMG_SIZE = None  # 내부 변수
     USE_ASPECT_PRESERVING = True
     PADDING_COLOR = (0, 0, 0)
 
     # 데이터 증강 (학습 중)
     USE_COLOR_AUGMENTATION = False
-    USE_MIXUP = True
-    MIXUP_ALPHA = 0.3
+    USE_MIXUP = False
+    MIXUP_ALPHA = 0.1
 
     # 새로운 증강 설정
     USE_BACKGROUND_BRIGHTNESS = True
     BRIGHTNESS_RANGE = (0.7, 1.3)
+    RANDOM_CROP_RATIO = 0.8
+
+
+    USE_SHIFT_SCALE_ROTATE = True
+    SHIFT_LIMIT = 0.05
+    SCALE_LIMIT = 0.05
+    ROTATE_LIMIT = 5
 
     # 학습 중 기본 증강
     USE_RANDOM_CROP = True
     RANDOM_CROP_SCALE = (0.8, 1.0)
     USE_RANDOM_FLIP = True
-    FLIP_PROBABILITY = 0.5
+    FLIP_PROBABILITY = 0.2
     USE_ROTATION = True
     ROTATION_DEGREES = 10
     USE_AFFINE = True
@@ -66,18 +109,17 @@ class Config:
     AFFINE_SCALE = (0.95, 1.05)
 
     # 손실 함수 설정
-    USE_FOCAL_LOSS = False
+    USE_FOCAL_LOSS = True
     FOCAL_LOSS_GAMMA = 2.0
     FOCAL_LOSS_ALPHA = None
-    LABEL_SMOOTHING = 0.01
+    LABEL_SMOOTHING = 0.0
 
     # 평가 설정
     EVAL_STEPS = 0
     SAVE_STEPS = 0
     LOGGING_STEPS = 50
 
-    # 얼리스토핑 설정
-    EARLY_STOPPING_PATIENCE = 8
+    # 최대 저장 모델 수
     MAX_SAVED_MODELS = 3
 
     # 교차검증 설정
@@ -109,6 +151,59 @@ class Config:
         for directory in directories:
             os.makedirs(directory, exist_ok=True)
 
+    @property
+    def IMG_SIZE(self) -> Tuple[int, int]:
+        """모델에 따른 이미지 크기 반환"""
+        if self._IMG_SIZE is not None:
+            return self._IMG_SIZE
+
+        model_name_lower = self.MODEL_NAME.lower()
+
+        # ResNet 계열은 더 큰 이미지 크기 사용
+        if 'resnet' in model_name_lower:
+            return (512, 512)  # height, width
+        elif 'efficientnet' in model_name_lower:
+            if 'b7' in model_name_lower:
+                return (600, 600)
+            elif 'b6' in model_name_lower:
+                return (528, 528)
+            elif 'b5' in model_name_lower:
+                return (456, 456)
+            elif 'b4' in model_name_lower:
+                return (380, 380)
+            else:
+                return (224, 224)
+        elif 'convnext' in model_name_lower:
+            return (384, 384)
+        else:
+            # ViT, Swin 등 기본값
+            return (224, 224)
+
+    def set_img_size(self, size: Tuple[int, int]):
+        """이미지 크기 수동 설정"""
+        self._IMG_SIZE = size
+
+    def get_model_type(self) -> str:
+        """모델 타입 반환"""
+        model_name_lower = self.MODEL_NAME.lower()
+
+        if 'resnet' in model_name_lower:
+            return 'resnet'
+        elif 'efficientnet' in model_name_lower:
+            return 'efficientnet'
+        elif 'convnext' in model_name_lower:
+            return 'convnext'
+        elif 'swin' in model_name_lower:
+            return 'swin'
+        elif 'vit' in model_name_lower:
+            return 'vit'
+        else:
+            return 'unknown'
+
+    def is_resnet_model(self) -> bool:
+        """ResNet 계열 모델인지 확인"""
+        return self.get_model_type() == 'resnet'
+
     def update_num_labels(self, num_labels: int):
         """Original class 수 업데이트"""
         self.NUM_LABELS = num_labels
@@ -121,16 +216,12 @@ class Config:
         """현재 폴드 설정"""
         self.CURRENT_FOLD = fold_idx
         # 폴드별 출력 디렉토리 설정
-        self.OUTPUT_DIR = os.path.join(self.MODEL_OUTPUT_DIR, f"hierarchical_fold_{fold_idx}")
+        model_type = self.get_model_type()
+        self.OUTPUT_DIR = os.path.join(self.MODEL_OUTPUT_DIR, f"{model_type}_hierarchical_fold_{fold_idx}")
         os.makedirs(self.OUTPUT_DIR, exist_ok=True)
 
     def get_fold_data_dir(self, fold_idx: int, split_type: str = "train"):
-        """폴드별 데이터 디렉토리 반환
-
-        Args:
-            fold_idx: 폴드 인덱스 (0-4)
-            split_type: 'train' 또는 'val'
-        """
+        """폴드별 데이터 디렉토리 반환"""
         if split_type == "train":
             return os.path.join(self.AUGMENTED_DATA_DIR, f"fold_{fold_idx}", "train_augmented")
         else:
@@ -168,13 +259,19 @@ class Config:
 
     def print_hierarchical_config(self):
         """계층적 분류 설정 출력"""
-        print("\n=== 계층적 분류 설정 ===")
+        print("\n=== 개선된 계층적 분류 설정 ===")
         print(f"USE_HIERARCHICAL_CLASSIFICATION: {self.USE_HIERARCHICAL_CLASSIFICATION}")
         print(f"GROUP_LOSS_WEIGHT: {self.GROUP_LOSS_WEIGHT}")
         print(f"CLASS_LOSS_WEIGHT: {self.CLASS_LOSS_WEIGHT}")
+        print(f"USE_PROGRESSIVE_TRAINING: {self.USE_PROGRESSIVE_TRAINING}")
+        print(f"USE_DYNAMIC_LOSS_WEIGHTS: {self.USE_DYNAMIC_LOSS_WEIGHTS}")
+        print(f"USE_DIFFERENT_LR: {self.USE_DIFFERENT_LR}")
+        print(f"EARLY_STOPPING_METRIC: {self.EARLY_STOPPING_METRIC}")
         print(f"NUM_GROUPS: {self.NUM_GROUPS}")
         print(f"NUM_LABELS: {self.NUM_LABELS}")
-        print(f"MAPPING_CSV_PATH: {self.MAPPING_CSV_PATH}")
+        print(f"MODEL_NAME: {self.MODEL_NAME}")
+        print(f"MODEL_TYPE: {self.get_model_type()}")
+        print(f"IMG_SIZE: {self.IMG_SIZE}")
 
 
 config = Config()
