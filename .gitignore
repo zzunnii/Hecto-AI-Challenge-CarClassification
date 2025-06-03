@@ -162,3 +162,10 @@ cython_debug/
 checkpoints
 outputs
 .png
+analysis_results
+analysis
+car
+mod
+ensemble_results
+car_classification/model_analysis_results
+.csv

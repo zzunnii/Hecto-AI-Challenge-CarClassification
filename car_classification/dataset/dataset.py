@@ -132,11 +132,11 @@ class CarBrandDataset(Dataset):
 
         # 경고 메시지 출력
         if missing_classes:
-            print(f"⚠️ Warning: Found classes not in class mapping: {missing_classes[:5]}...")
+            print(f" Warning: Found classes not in class mapping: {missing_classes[:5]}...")
         if missing_mappings:
-            print(f"⚠️ Warning: Found classes not in CSV mapping: {missing_mappings[:5]}...")
+            print(f" Warning: Found classes not in CSV mapping: {missing_mappings[:5]}...")
         if duplicate_count > 0:
-            print(f"⚠️ Warning: Skipped {duplicate_count} duplicate files")
+            print(f" Warning: Skipped {duplicate_count} duplicate files")
 
         # 통계 출력
         print(f"\nDataset loaded successfully:")

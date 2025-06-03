@@ -3,6 +3,6 @@ from .model import (
     HierarchicalCarClassifier,
     CarBrandClassifier,
     EnhancedAttentionModule,
-    GatedFusionModule
+    GatedFusionModule,
 )
 from .backbone import ViTBackbone

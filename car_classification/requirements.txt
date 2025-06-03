@@ -12,3 +12,4 @@ torch==2.7.0+cu118
 torchvision==0.22.0+cu118
 tqdm==4.67.1
 transformers==4.51.3
+openpyxl==3.1.5

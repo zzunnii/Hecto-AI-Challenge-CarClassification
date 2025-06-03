@@ -86,7 +86,7 @@ def get_albumentations_transform(config, is_train=True):
 
         # 5. 원근 변환 (매우 미세하게)
         transform_list.append(
-            A.Perspective(scale=(0.03, 0.06),           # 🔄 0.02–0.05 → 0.03–0.06
+            A.Perspective(scale=(0.03, 0.06),
                           keep_size=True,
                           border_mode=cv2.BORDER_CONSTANT,
                           fill=0,
@@ -108,7 +108,7 @@ def get_albumentations_transform(config, is_train=True):
         if config.USE_BACKGROUND_BRIGHTNESS:
             transform_list.append(
                 A.RandomBrightnessContrast(
-                    brightness_limit=0.3,               # 🔄 0.15 → 0.3 (config 범위 반영)
+                    brightness_limit=0.3,
                     contrast_limit=0.2,
                     p=0.3
                 )
@@ -130,7 +130,7 @@ def get_albumentations_transform(config, is_train=True):
 
         # 8. 정규화 및 텐서 변환
         transform_list.extend([
-            A.Normalize(mean=mean, std=std),   # 🔄
+            A.Normalize(mean=mean, std=std),
             ToTensorV2()
         ])
 

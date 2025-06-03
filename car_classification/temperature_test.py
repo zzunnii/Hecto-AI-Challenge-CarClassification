@@ -327,8 +327,8 @@ def load_models_for_ensemble(model_metadata, base_config):
     return models
 
 
-def predict_test_data(models, test_dir, ensemble_weights, strategy_name, trained_classes):
-    """테스트 데이터에 대한 앙상블 예측 (확률 분포 반환)"""
+def predict_test_data(models, test_dir, ensemble_weights, strategy_name):
+    """테스트 데이터에 대한 앙상블 예측"""
 
     print(f"\nPredicting test data with {strategy_name} strategy...")
 
@@ -341,7 +341,13 @@ def predict_test_data(models, test_dir, ensemble_weights, strategy_name, trained
     test_images.sort()
     print(f"Found {len(test_images)} test images")
 
-    num_classes = len(trained_classes)
+    # 클래스 정보 로드
+    class_mapping_path = config.get_class_mapping_path()
+    with open(class_mapping_path, 'r', encoding='utf-8') as f:
+        saved_mapping = json.load(f)
+        idx_to_class = {int(idx): name for idx, name in saved_mapping.items()}
+
+    num_classes = len(idx_to_class)
 
     # 예측 결과 저장
     all_predictions = []
@@ -350,6 +356,7 @@ def predict_test_data(models, test_dir, ensemble_weights, strategy_name, trained
 
     for i in tqdm(range(0, len(test_images), batch_size), desc="Processing batches"):
         batch_images = test_images[i:i + batch_size]
+        batch_probs = []
 
         # 각 모델의 예측 수집
         model_predictions = {}
@@ -424,84 +431,43 @@ def predict_test_data(models, test_dir, ensemble_weights, strategy_name, trained
                 else:
                     ensemble_probs = np.ones(num_classes) / num_classes
 
-            # 예측 결과 저장 (확률 분포 포함)
+            # 예측 클래스
             pred_class_idx = np.argmax(ensemble_probs)
-            pred_class_name = trained_classes[pred_class_idx]
+            pred_class_name = idx_to_class[pred_class_idx]
             confidence = np.max(ensemble_probs)
 
             all_predictions.append({
                 'image': img_name,
                 'predicted_class': pred_class_name,
                 'confidence': confidence,
-                'probabilities': ensemble_probs.tolist(),
-                'trained_classes': trained_classes  # 클래스 순서 정보 포함
+                'probabilities': ensemble_probs.tolist()
             })
 
     return all_predictions
 
 
-def create_submission_file(predictions, output_path, strategy_name, submission_classes):
-    """제출 파일 생성 (확률 분포 형태)"""
+def create_submission_file(predictions, output_path, strategy_name):
+    """제출 파일 생성"""
 
-    # 샘플 서브미션 구조 따라하기
     submission_data = []
-
     for pred in predictions:
-        # 이미지 ID (확장자 제거)
-        img_id = os.path.splitext(pred['image'])[0]
+        submission_data.append({
+            'image': pred['image'],
+            'label': pred['predicted_class']
+        })
 
-        # 결과 행 생성
-        result_row = {'ID': img_id}
-
-        # 각 서브미션 클래스별 확률 할당
-        probabilities = pred['probabilities']
-        trained_classes = pred['trained_classes']  # 학습된 클래스 순서
-
-        for submission_class in submission_classes:
-            if submission_class in trained_classes:
-                class_idx = trained_classes.index(submission_class)
-                result_row[submission_class] = float(probabilities[class_idx])
-            else:
-                # 학습되지 않은 클래스는 0.0
-                result_row[submission_class] = 0.0
-
-        submission_data.append(result_row)
-
-    # DataFrame 생성 (컬럼 순서 맞추기)
     submission_df = pd.DataFrame(submission_data)
-
-    # 컬럼 순서: ID + 모든 클래스들
-    ordered_columns = ['ID'] + submission_classes
-    submission_df = submission_df[ordered_columns]
-
-    # CSV 저장
     submission_df.to_csv(output_path, index=False)
 
     print(f"✓ Saved submission file: {output_path}")
     print(f"  Strategy: {strategy_name}")
     print(f"  Predictions: {len(submission_data)}")
-    print(f"  Classes: {len(submission_classes)}")
 
-    # 통계 출력 (최고 확률 클래스 기준)
-    predicted_classes = []
-    max_confidences = []
-
-    for pred in predictions:
-        probabilities = pred['probabilities']
-        max_idx = np.argmax(probabilities)
-        trained_classes = pred['trained_classes']
-        predicted_class = trained_classes[max_idx]
-        max_confidence = probabilities[max_idx]
-
-        predicted_classes.append(predicted_class)
-        max_confidences.append(max_confidence)
-
-    class_counts = pd.Series(predicted_classes).value_counts()
-    print(f"  Top predicted classes:")
+    # 통계 출력
+    class_counts = submission_df['label'].value_counts()
+    print(f"  Class distribution:")
     for class_name, count in class_counts.head(10).items():
         print(f"    {class_name}: {count}")
-
-    print(f"  Average confidence: {np.mean(max_confidences):.4f}")
 
 
 def main():
@@ -519,29 +485,6 @@ def main():
 
     if not os.path.exists(test_data_dir):
         raise FileNotFoundError(f"Test directory not found: {test_data_dir}")
-
-    # 샘플 서브미션에서 클래스 구조 로드
-    sample_submission_path = os.path.join(config.BASE_DIR, "sample_submission.csv")
-    if not os.path.exists(sample_submission_path):
-        raise FileNotFoundError(f"Sample submission not found: {sample_submission_path}")
-
-    sample_submission = pd.read_csv(sample_submission_path)
-    submission_classes = [col for col in sample_submission.columns if col != 'ID']
-    print(f"Sample submission classes: {len(submission_classes)}")
-
-    # 학습된 클래스 정보 로드
-    class_mapping_path = config.get_class_mapping_path()
-    with open(class_mapping_path, 'r', encoding='utf-8') as f:
-        saved_mapping = json.load(f)
-        trained_classes = [saved_mapping[str(i)] for i in range(len(saved_mapping))]
-
-    print(f"Trained classes: {len(trained_classes)}")
-
-    # 클래스 매칭 확인
-    trained_set = set(trained_classes)
-    submission_set = set(submission_classes)
-    overlap = trained_set & submission_set
-    print(f"Class overlap: {len(overlap)}/{len(submission_classes)} submission classes covered")
 
     # 앙상블 예측기 초기화
     ensemble_predictor = EnsemblePredictor(analysis_results_dir, test_data_dir)
@@ -583,11 +526,11 @@ def main():
                 print(f"  Using class-specific weights (too complex to display)")
 
             # 예측 수행
-            predictions = predict_test_data(models, test_data_dir, weights, strategy_name, trained_classes)
+            predictions = predict_test_data(models, test_data_dir, weights, strategy_name)
 
-            # 제출 파일 생성 (확률 분포 형태)
+            # 제출 파일 생성
             submission_path = os.path.join(output_dir, f"submission_{strategy_name}.csv")
-            create_submission_file(predictions, submission_path, strategy_name, submission_classes)
+            create_submission_file(predictions, submission_path, strategy_name)
 
             # 결과 저장
             results[strategy_name] = {
@@ -621,7 +564,6 @@ def main():
         print(f"  Max confidence: {np.max(confidences):.4f}")
 
     print(f"\n🎉 Ready for submission! Choose the best strategy based on validation performance.")
-    print(f"📊 All submission files include probability distributions for each class.")
 
     # 메모리 정리
     for model_info in models.values():

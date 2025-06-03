@@ -215,9 +215,9 @@ if __name__ == "__main__":
                         help='Specific fold to train (0-4). If not specified, train current fold in config.')
     parser.add_argument('--all-folds', action='store_true', default=True,
                         help='Train all 5 folds sequentially')
-    parser.add_argument('--model', type=str, default='resnet50',
+    parser.add_argument('--model', type=str, default='microsoft/swin-base-patch4-window7-224-in22k',
                         help='Model name to use (overrides config)')
-    parser.add_argument('--img-size', nargs=2, type=int, default=(384, 384),
+    parser.add_argument('--img-size', nargs=2, type=int, default=(224, 224),
                         help='Image size as height width (e.g., --img-size 384 384)')
 
     args = parser.parse_args()

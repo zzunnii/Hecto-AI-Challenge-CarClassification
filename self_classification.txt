@@ -148,6 +148,7 @@ bmw
 ==============================================================================
 현대
 ==============================================================================
+더_뉴_코나_2023_2025
 "\\wsl.localhost\Ubuntu\home\leeseongjun\hecto\open\rm_bg_train\i30_PD_2017_2018"
 "\\wsl.localhost\Ubuntu\home\leeseongjun\hecto\open\rm_bg_train\LF_쏘나타_2015_2017"
 "\\wsl.localhost\Ubuntu\home\leeseongjun\hecto\open\rm_bg_train\YF쏘나타_2009_2012"

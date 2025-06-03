@@ -57,7 +57,7 @@ class TorchVisionBackbone(nn.Module):
             weights = models.ResNet34_Weights.IMAGENET1K_V1 if pretrained else None
             return models.resnet34(weights=weights)
         elif model_name_lower == 'resnet50':
-            weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None  # V2가 최신/최고성능
+            weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
             return models.resnet50(weights=weights)
         elif model_name_lower == 'resnet101':
             weights = models.ResNet101_Weights.IMAGENET1K_V2 if pretrained else None

@@ -13,6 +13,7 @@ import glob
 
 from car_classification.config import config
 from car_classification.train.loss import FocalLoss, MixupLoss, AdaptiveClassWeightScheduler
+from car_classification.train.sam import SAM, ESAM, LookSAM
 from car_classification.dataset.augmentation import Mixup
 from car_classification.utils.metrics import log_loss_calc_for_validation, multiclass_log_loss, \
     create_answer_df_from_arrays, create_submission_df_from_arrays
@@ -69,7 +70,7 @@ class EarlyStopping:
 
 
 class ImprovedHierarchicalTrainer:
-    """개선된 계층적 분류 모델 학습을 위한 클래스 - 점진적 학습 지원"""
+    """개선된 계층적 분류 모델 학습을 위한 클래스 - SAM 지원 추가"""
 
     def __init__(self, model, train_loader, val_loader, config, class_weights=None, group_weights=None):
         self.model = model
@@ -97,7 +98,7 @@ class ImprovedHierarchicalTrainer:
         # 손실 함수 설정
         self._setup_loss_functions()
 
-        # 옵티마이저 설정 (차등 학습률 지원)
+        # 옵티마이저 설정 (SAM 지원 추가)
         self._setup_optimizers()
 
         # 스케줄러 설정
@@ -139,7 +140,7 @@ class ImprovedHierarchicalTrainer:
         self.max_saved_models = config.MAX_SAVED_MODELS
         self.saved_models = []
 
-        # 🆕 클래스 이름 저장 (로그 로스 계산용)
+        # 클래스 이름 저장 (로그 로스 계산용)
         self.class_names = None
 
     def _setup_loss_functions(self):
@@ -172,7 +173,10 @@ class ImprovedHierarchicalTrainer:
             self.model.set_class_weights(self.class_weights)
 
     def _setup_optimizers(self):
-        """옵티마이저 설정 (차등 학습률 지원)"""
+        """옵티마이저 설정 (SAM 지원 추가)"""
+        # SAM 사용 여부 확인
+        use_sam = getattr(self.config, 'USE_SAM', False)
+
         if getattr(self.config, 'USE_DIFFERENT_LR', False):
             # 그룹과 클래스 분류기에 다른 학습률 적용
             group_params = []
@@ -187,31 +191,94 @@ class ImprovedHierarchicalTrainer:
                 else:
                     backbone_params.append(param)
 
-            self.optimizer = optim.AdamW([
+            param_groups = [
                 {'params': backbone_params, 'lr': self.config.LEARNING_RATE},
                 {'params': group_params, 'lr': self.config.GROUP_LEARNING_RATE},
                 {'params': class_params, 'lr': self.config.CLASS_LEARNING_RATE}
-            ], weight_decay=self.config.WEIGHT_DECAY)
+            ]
 
             print(f"Using differential learning rates:")
             print(f"  Backbone: {self.config.LEARNING_RATE}")
             print(f"  Group classifier: {self.config.GROUP_LEARNING_RATE}")
             print(f"  Class classifier: {self.config.CLASS_LEARNING_RATE}")
         else:
-            # 기본 옵티마이저
-            self.optimizer = optim.AdamW(
-                self.model.parameters(),
-                lr=self.config.LEARNING_RATE,
-                weight_decay=self.config.WEIGHT_DECAY
-            )
+            # 기본 파라미터 그룹
+            param_groups = self.model.parameters()
+
+        # SAM optimizer 설정
+        if use_sam:
+            # Base optimizer 인자 준비
+            base_optimizer_kwargs = {
+                'lr': self.config.LEARNING_RATE,
+                'weight_decay': self.config.WEIGHT_DECAY
+            }
+
+            # SAM 타입 선택
+            sam_type = getattr(self.config, 'SAM_TYPE', 'SAM')
+            sam_rho = getattr(self.config, 'SAM_RHO', 0.05)
+            sam_adaptive = getattr(self.config, 'SAM_ADAPTIVE', False)
+
+            print(f"Using {sam_type} optimizer with rho={sam_rho}, adaptive={sam_adaptive}")
+
+            if sam_type == 'ESAM':
+                update_freq = getattr(self.config, 'SAM_UPDATE_FREQ', 10)
+                self.optimizer = ESAM(
+                    param_groups,
+                    optim.AdamW,
+                    rho=sam_rho,
+                    adaptive=sam_adaptive,
+                    update_freq=update_freq,
+                    **base_optimizer_kwargs
+                )
+                print(f"  ESAM update frequency: {update_freq}")
+            elif sam_type == 'LookSAM':
+                alpha = getattr(self.config, 'SAM_ALPHA', 0.5)
+                k = getattr(self.config, 'SAM_K', 5)
+                self.optimizer = LookSAM(
+                    param_groups,
+                    optim.AdamW,
+                    rho=sam_rho,
+                    adaptive=sam_adaptive,
+                    alpha=alpha,
+                    k=k,
+                    **base_optimizer_kwargs
+                )
+                print(f"  LookSAM alpha={alpha}, k={k}")
+            else:  # 기본 SAM
+                self.optimizer = SAM(
+                    param_groups,
+                    optim.AdamW,
+                    rho=sam_rho,
+                    adaptive=sam_adaptive,
+                    **base_optimizer_kwargs
+                )
+        else:
+            # 기존 optimizer
+            if isinstance(param_groups, list):
+                self.optimizer = optim.AdamW(
+                    param_groups,
+                    weight_decay=self.config.WEIGHT_DECAY
+                )
+            else:
+                self.optimizer = optim.AdamW(
+                    param_groups,
+                    lr=self.config.LEARNING_RATE,
+                    weight_decay=self.config.WEIGHT_DECAY
+                )
 
     def _setup_schedulers(self):
         """스케줄러 설정"""
         num_training_steps = len(self.train_loader) * self.config.NUM_EPOCHS // self.config.GRADIENT_ACCUMULATION_STEPS
         num_warmup_steps = int(self.config.WARMUP_RATIO * num_training_steps)
 
+        # SAM을 사용하는 경우 base_optimizer의 param_groups 사용
+        if hasattr(self.optimizer, 'base_optimizer'):
+            optimizer_for_scheduler = self.optimizer.base_optimizer
+        else:
+            optimizer_for_scheduler = self.optimizer
+
         self.scheduler = optim.lr_scheduler.OneCycleLR(
-            self.optimizer,
+            optimizer_for_scheduler,
             max_lr=self.config.LEARNING_RATE if not getattr(self.config, 'USE_DIFFERENT_LR', False) else [
                 self.config.LEARNING_RATE,
                 self.config.GROUP_LEARNING_RATE,
@@ -238,7 +305,7 @@ class ImprovedHierarchicalTrainer:
             return val_loss
 
     def train_epoch(self, epoch):
-        """한 에폭 훈련 (점진적 학습 지원)"""
+        """한 에폭 훈련 (SAM 지원 추가)"""
         # 모델에 현재 에폭 설정
         self.model.set_epoch(epoch)
 
@@ -251,6 +318,9 @@ class ImprovedHierarchicalTrainer:
         labels_list = []
         group_preds_list = []
         group_labels_list = []
+
+        # SAM 사용 확인
+        use_sam = isinstance(self.optimizer, (SAM, ESAM, LookSAM))
 
         progress_bar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.config.NUM_EPOCHS} [Train]")
 
@@ -265,7 +335,7 @@ class ImprovedHierarchicalTrainer:
                 pixel_values, labels_a, labels_b, lam = self.mixup((pixel_values, labels))
                 group_labels_a, group_labels_b = group_labels, group_labels[torch.randperm(len(group_labels))]
 
-            # 그래디언트 누적을 위한 스케일링
+            # SAM의 첫 번째 forward pass
             with torch.amp.autocast(device_type='cuda', enabled=self.config.USE_FP16):
                 outputs = self.model(pixel_values, labels=labels, group_labels=group_labels)
 
@@ -291,23 +361,88 @@ class ImprovedHierarchicalTrainer:
                 # 그래디언트 누적
                 loss = loss / self.config.GRADIENT_ACCUMULATION_STEPS
 
-            # FP16 훈련
+            # SAM 처리를 위한 gradient 계산
             if self.scaler:
                 self.scaler.scale(loss).backward()
-
-                if (step + 1) % self.config.GRADIENT_ACCUMULATION_STEPS == 0:
-                    self.scaler.unscale_(self.optimizer)
-                    nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                    self.scheduler.step()
-                    self.optimizer.zero_grad()
             else:
                 loss.backward()
 
-                if (step + 1) % self.config.GRADIENT_ACCUMULATION_STEPS == 0:
-                    nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    self.optimizer.step()
+            # 그래디언트 누적 후 업데이트
+            if (step + 1) % self.config.GRADIENT_ACCUMULATION_STEPS == 0:
+                if use_sam:
+                    # SAM의 두 단계 업데이트
+                    if self.scaler:
+                        # First step: perturbation
+                        self.scaler.unscale_(self.optimizer)
+                        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.optimizer.first_step(zero_grad=False)
+
+                        # Second forward pass
+                        with torch.amp.autocast(device_type='cuda', enabled=self.config.USE_FP16):
+                            outputs = self.model(pixel_values, labels=labels, group_labels=group_labels)
+
+                            if self.mixup and self.config.USE_MIXUP:
+                                class_loss = self.mixup_class_criterion(outputs["logits"], labels_a, labels_b, lam) \
+                                    if outputs["class_loss"] is not None else torch.tensor(0.0)
+                                group_loss = self.mixup_group_criterion(outputs["group_logits"], group_labels_a,
+                                                                        group_labels_b, lam)
+                                if outputs["current_weights"] is not None:
+                                    group_weight, class_weight = outputs["current_weights"]
+                                    loss = group_weight * group_loss + class_weight * class_loss
+                                else:
+                                    loss = outputs["loss"]
+                            else:
+                                loss = outputs["loss"]
+
+                            loss = loss / self.config.GRADIENT_ACCUMULATION_STEPS
+
+                        # Second step: actual update
+                        self.scaler.scale(loss).backward()
+                        #self.scaler.unscale_(self.optimizer)
+                        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.optimizer.second_step()
+                        self.scaler.update()
+                    else:
+                        # FP32 SAM
+                        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.optimizer.first_step(zero_grad=False)
+
+                        # Second forward pass
+                        outputs = self.model(pixel_values, labels=labels, group_labels=group_labels)
+
+                        if self.mixup and self.config.USE_MIXUP:
+                            class_loss = self.mixup_class_criterion(outputs["logits"], labels_a, labels_b, lam) \
+                                if outputs["class_loss"] is not None else torch.tensor(0.0)
+                            group_loss = self.mixup_group_criterion(outputs["group_logits"], group_labels_a,
+                                                                    group_labels_b, lam)
+                            if outputs["current_weights"] is not None:
+                                group_weight, class_weight = outputs["current_weights"]
+                                loss = group_weight * group_loss + class_weight * class_loss
+                            else:
+                                loss = outputs["loss"]
+                        else:
+                            loss = outputs["loss"]
+
+                        loss = loss / self.config.GRADIENT_ACCUMULATION_STEPS
+                        loss.backward()
+
+                        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.optimizer.second_step()
+
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
+
+                else:
+                    # 기존 optimizer 업데이트
+                    if self.scaler:
+                        self.scaler.unscale_(self.optimizer)
+                        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.optimizer.step()
+
                     self.scheduler.step()
                     self.optimizer.zero_grad()
 
@@ -341,6 +476,9 @@ class ImprovedHierarchicalTrainer:
                 if current_weights[0] is not None:
                     postfix["grp_w"] = f"{current_weights[0]:.3f}"
                     postfix["cls_w"] = f"{current_weights[1]:.3f}"
+                # SAM 사용 시 표시
+                if use_sam:
+                    postfix["SAM"] = "✓"
                 progress_bar.set_postfix(postfix)
 
         # 훈련 메트릭 계산
@@ -400,7 +538,7 @@ class ImprovedHierarchicalTrainer:
                     all_labels.extend(labels.detach().cpu().numpy())
                     all_logits.extend(torch.softmax(outputs["logits"], dim=1).detach().cpu().numpy())
 
-                    # 🆕 가상 ID 생성 (배치 인덱스 기반)
+                    # 가상 ID 생성 (배치 인덱스 기반)
                     batch_size = len(labels)
                     batch_ids = [f"val_{batch_idx}_{i}" for i in range(batch_size)]
                     all_ids.extend(batch_ids)
@@ -444,7 +582,7 @@ class ImprovedHierarchicalTrainer:
                 if len(problem_classes) > 5:
                     print(f"  ... and {len(problem_classes) - 5} more problem classes")
 
-            # 🆕 새로운 방식의 로그 로스 계산
+            # 새로운 방식의 로그 로스 계산
             try:
                 # 클래스 이름 생성 (인덱스 기반)
                 if self.class_names is None:
@@ -502,7 +640,7 @@ class ImprovedHierarchicalTrainer:
             'val_metrics': val_metrics,
             'config': self.config.to_dict(),
             'metric_name': metric_name,
-            'class_names': self.class_names,  # 🆕 클래스 이름 저장
+            'class_names': self.class_names,  # 클래스 이름 저장
             'class_weights': self.model.class_weights if hasattr(self.model, 'class_weights') else None  # 적응형 가중치 저장
         }
 
@@ -528,7 +666,7 @@ class ImprovedHierarchicalTrainer:
         return model_path
 
     def train(self):
-        """전체 훈련 프로세스 (점진적 학습 지원)"""
+        """전체 훈련 프로세스 (SAM 지원 추가)"""
         print(f"Starting hierarchical training for {self.config.NUM_EPOCHS} epochs...")
         print(f"Progressive training: {getattr(self.config, 'USE_PROGRESSIVE_TRAINING', False)}")
         print(f"Dynamic loss weights: {getattr(self.config, 'USE_DYNAMIC_LOSS_WEIGHTS', False)}")
@@ -536,7 +674,13 @@ class ImprovedHierarchicalTrainer:
         print(f"Enhanced attention: {getattr(self.config, 'USE_ENHANCED_ATTENTION', False)}")
         print(f"Early stopping metric: {self.config.EARLY_STOPPING_METRIC}")
         print(f"Higher is better: {self.higher_is_better}")
-        print("🔥 Temperature scaling: DISABLED")
+        print(f"Temperature scaling: DISABLED")
+
+        #  SAM 설정 출력
+        if getattr(self.config, 'USE_SAM', False):
+            print(f"   SAM optimizer: {getattr(self.config, 'SAM_TYPE', 'SAM')}")
+            print(f"   rho: {getattr(self.config, 'SAM_RHO', 0.05)}")
+            print(f"   adaptive: {getattr(self.config, 'SAM_ADAPTIVE', False)}")
 
         start_time = time.time()
 
