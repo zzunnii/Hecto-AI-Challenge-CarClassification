@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Tuple
 
 class Config:
     # 기본 베이스 경로
-    BASE_DIR = r"C:\Users\tjdwn\OneDrive\Desktop\hectoData\open"
+    BASE_DIR = r"your path"
 
     # 데이터 경로들
     DATA_DIR = os.path.join(BASE_DIR, "train")  # 원본 데이터
@@ -13,11 +13,11 @@ class Config:
     SPLITS_DIR = os.path.join(BASE_DIR, "split_info")  # 폴드 정보 저장
     MODEL_OUTPUT_DIR = r"./resnet_car_classification/outputs"  # 모델 아웃풋
 
-    AUGMENTED_TRAIN_DIR = r"C:\Users\tjdwn\OneDrive\Desktop\hectoData\open\augmented_data\fold_0\train_augmented"
-    VAL_DIR = r"C:\Users\tjdwn\OneDrive\Desktop\hectoData\open\augmented_data\fold_0\val"
+    AUGMENTED_TRAIN_DIR = r"your path\augmented_data\fold_0\train_augmented"
+    VAL_DIR = r"Cyour path\augmented_data\fold_0\val"
 
     # 계층적 분류를 위한 매핑 파일
-    MAPPING_CSV_PATH = r"C:\Users\tjdwn\GitHub\Hecto-AI-Challenge-CarClassification\car_class_mapping.csv"
+    MAPPING_CSV_PATH = r"your path\car_class_mapping.csv"
 
     OUTPUT_DIR = "./resnet_car_classification/outputs"
 
