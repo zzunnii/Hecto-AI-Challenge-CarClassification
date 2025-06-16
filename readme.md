@@ -1,7 +1,7 @@
 # Hecto AI 자동차 분류 챌린지
 
 이 저장소는 Hecto AI Challenge 참가를 위해 작성된 자동차 이미지 분류 코드입니다. ResNet과 ResNeXt 기반의 계층적 분류 모델을 사용하여 차량 브랜드와 세부 모델을 예측합니다.
-
+데이터의 대한 저작권은 Dacon에 있습니다.
 ## 폴더 구조
 - `resnet_car_classification/` : ResNet 기반 모델 구현
 - `resnext_car_classification/` : ResNeXt 기반 모델 구현
