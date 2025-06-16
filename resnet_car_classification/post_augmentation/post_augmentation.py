@@ -351,7 +351,6 @@ def process_ultra_fast_fold_augmentation(fold_idx, train_dir, mask_dir, output_d
     os.makedirs(train_output_dir, exist_ok=True)
     os.makedirs(val_output_dir, exist_ok=True)
 
-    # 클래스별 출력 디렉토리 미리 생성 (실제 차량 클래스명으로)
     actual_class_names = set()
     for file_info in train_files + val_files:
         actual_class_names.add(file_info['class_name'])
@@ -425,7 +424,6 @@ def main(fold=None):
     print(" 벡터화 최적화 적용")
     print("=" * 50)
 
-    # 경로 설정
     TRAIN_DIR = config.DATA_DIR
     MASK_DIR = config.MASK_DIR
     OUTPUT_DIR = config.AUGMENTED_DATA_DIR
@@ -433,7 +431,6 @@ def main(fold=None):
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # 초고속 증강기 초기화
     augmentor = UltraFastCarColorAugmentor(seed=42)
     augmentor.print_strategy()
 
