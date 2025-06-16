@@ -1,0 +1,16 @@
+albumentations==2.0.7
+koreanize_matplotlib==0.1.1
+matplotlib==3.10.3
+numpy==2.2.6
+opencv_python==4.11.0.86
+opencv_python_headless==4.11.0.86
+pandas==2.2.3
+Pillow==11.2.1
+scikit_learn==1.6.1
+seaborn==0.13.2
+torch==2.7.0+cu118
+torchvision==0.22.0+cu118
+tqdm==4.67.1
+transformers==4.51.3
+openpyxl==3.1.5
+optuna==4.3.0
